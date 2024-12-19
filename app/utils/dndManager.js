@@ -9,6 +9,8 @@ class DndManager extends EventEmitter {
     this.timer = null
     this.isOnDnd = false
 
+    this._unsupDEErrorShown = false
+
     if (process.platform === 'win32') {
       this.windowsFocusAssist = require('windows-focus-assist')
       this.windowsQuietHours = require('windows-quiet-hours')
@@ -42,39 +44,47 @@ class DndManager extends EventEmitter {
   }
 
   async _isDndEnabledLinux () {
-    try {
-      const obj = await this.bus.getProxyObject('org.freedesktop.Notifications', '/org/freedesktop/Notifications')
-      const properties = obj.getInterface('org.freedesktop.DBus.Properties')
-      const dndEnabled = await properties.Get('org.freedesktop.Notifications', 'Inhibited')
-      if (await dndEnabled.value) {
-        return true
-      }
-    } catch (e) {
-      // KDE is not running
-    }
+    const de = process.env.XDG_CURRENT_DESKTOP
+    // https://specifications.freedesktop.org/mime-apps-spec/latest/file.html
+    // https://specifications.freedesktop.org/menu-spec/latest/onlyshowin-registry.html
 
-    try {
-      const obj = await this.bus.getProxyObject('org.xfce.Xfconf', '/org/xfce/Xfconf')
-      const properties = obj.getInterface('org.xfce.Xfconf')
-      const dndEnabled = await properties.GetProperty('xfce4-notifyd', '/do-not-disturb')
-      if (await dndEnabled.value) {
-        return true
-      }
-    } catch (e) {
-      // XFCE is not running
+    switch (true) {
+      case de.includes('KDE'):
+        try {
+          const obj = await this.bus.getProxyObject('org.freedesktop.Notifications', '/org/freedesktop/Notifications')
+          const properties = obj.getInterface('org.freedesktop.DBus.Properties')
+          const dndEnabled = await properties.Get('org.freedesktop.Notifications', 'Inhibited')
+          if (await dndEnabled.value) {
+            return true
+          }
+        } catch (e) {}
+        break
+      case de.includes('XFCE'):
+        try {
+          const obj = await this.bus.getProxyObject('org.xfce.Xfconf', '/org/xfce/Xfconf')
+          const properties = obj.getInterface('org.xfce.Xfconf')
+          const dndEnabled = await properties.GetProperty('xfce4-notifyd', '/do-not-disturb')
+          if (await dndEnabled.value) {
+            return true
+          }
+        } catch (e) {}
+        break
+      case de.includes('GNOME'):
+        try {
+          const exec = this.util.promisify(require('node:child_process').exec)
+          const { stdout } = await exec('gsettings get org.gnome.desktop.notifications show-banners')
+          if (stdout.replace(/[^0-9a-zA-Z]/g, '') === 'false') {
+            return true
+          }
+        } catch (e) {}
+        break
+      default:
+        if (!this._unsupDEErrorShown) {
+          log.info(`Stretchly: ${process.env.XDG_CURRENT_DESKTOP} not supported for DND detection, yet.`)
+          this._unsupDEErrorShown = true
+        }
+        return false
     }
-
-    try {
-      const exec = this.util.promisify(require('node:child_process').exec)
-      const { stdout } = await exec('gsettings get org.gnome.desktop.notifications show-banners')
-      if (stdout.replace(/[^0-9a-zA-Z]/g, '') === 'false') {
-        return true
-      }
-    } catch (e) {
-      // Gnome / gsettings is not running
-    }
-
-    return false
   }
 
   async _doNotDisturb () {
